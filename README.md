@@ -1,18 +1,17 @@
-# agent-env-mcp
+# @brycepelletier/agent-env-mcp
 
-A host-side MCP controller that owns a reusable Linux development runtime and exposes a narrow, project-scoped workspace/tool boundary to coding agents.
+Reusable, host-side MCP controller for a hardened Linux software-engineering runtime.
 
-## Trust boundary
+## 0.3.1 trust split
 
-- The MCP process runs on the host because it must control Docker.
-- The model is never given a host filesystem tool or arbitrary host command tool.
-- VS Code passes the currently-open workspace once at MCP startup through `AGENT_HOST_WORKSPACE`.
-- That workspace is bind-mounted into an agent-owned runtime at `/agent-env/environment/<project-slug>`.
-- File reads, searches, edits, local Git, builds, tests, and other command execution happen inside the Linux `agent` container.
-- The runtime has no Docker socket and no GitHub credential mount.
-- Compose and Dockerfile are owned by this repository, not by the application repository.
+The Compose runtime has two execution domains over the same working tree:
 
-## Exposed tools
+- `agent`: used by Software Engineer tools. The real `.git` directory is masked with a root-owned tmpfs mount.
+- `git`: used only by `git_command`. It sees the real `.git` directory and has `network_mode: none`.
+
+Remote Git/GitHub operations do not belong in this package; they are intended for the separate GitHub MCP trust domain.
+
+## Tools
 
 - `ensure_environment`
 - `list_directory`
@@ -22,58 +21,37 @@ A host-side MCP controller that owns a reusable Linux development runtime and ex
 - `run_command`
 - `git_command`
 
-`run_command` uses structured `program` + `args` execution with no shell and refuses direct Git. `git_command` is intended for the GitHub Operator, disables repository hooks/signing, and permits only a local Git subcommand allowlist; network Git operations are intentionally excluded.
+The MCP discovers the active VS Code workspace lazily through MCP Roots when a tool is first used. No `${workspaceFolder}` launch-time variable is required.
 
-## Install
+## Local development
 
-```powershell
-cd D:\mcp\agent-env-mcp
-npm install
+```bash
+npm run link
 ```
 
-Add the server to VS Code user MCP configuration using `mcp.json.example`.
-
-The important setting is:
+User-level VS Code MCP configuration while linked:
 
 ```json
-"env": {
-  "AGENT_HOST_WORKSPACE": "${workspaceFolder}"
+"agent-env": {
+  "type": "stdio",
+  "command": "agent-env-mcp"
 }
 ```
 
-The model cannot select a different host workspace after the MCP server starts.
+To remove the global development link:
 
-## Verification
+```bash
+npm run unlink
+```
 
-After restarting the MCP server:
+## 0.3.1 acceptance checks
 
-1. `ensure_environment`
-2. `list_directory` with `path: "."`
-3. `read_file` on a known project file
-4. `search_workspace` for a known symbol/text
-5. `run_command` with `program: "pwd"`
-6. `git_command` with `args: ["status", "--short"]`
+Before removing a project's old `.devcontainer`:
 
-Expected boundary failures:
+1. `ensure_environment` succeeds and reports `/agent-env/environment/<project>`.
+2. `run_command` can build the project.
+3. `run_command` cannot obtain the real Git branch/history even if it invokes Git indirectly through Python/Node.
+4. `git_command ["status", "--short", "--branch"]` succeeds.
+5. The Git service has no network access.
 
-- `read_file("../../anything")`
-- an absolute path
-- a Windows path
-- direct `.git` reads
-- `run_command` with `bash`
-- `run_command` with `docker`
-- `run_command` with `git`
-
-## Migration
-
-After the new runtime is proven:
-
-1. Remove the project-owned `.devcontainer`.
-2. Remove generic VS Code `execute`, `read`, `edit`, and `search` from Software Engineer.
-3. For a strict container-only read boundary, also remove VS Code C/C++ semantic tools that inspect source outside `agent-env`.
-4. Give GitHub Operator `agent-env/git_command` for local Git.
-5. Keep remote GitHub operations in the GitHub MCP.
-
-## Runtime baseline
-
-The included Dockerfile uses Node 24 LTS, C/C++ build tools, Python, PlatformIO 6.1.19, Git, and ripgrep. Runtime profiles can be split out later without changing the trust model.
+The current `.git` masking implementation assumes a standard checkout where `.git` is a directory. Git worktrees/submodules that use a `.git` file should be rejected or handled by a future mount strategy before treating this runtime as hardened for those repository forms.

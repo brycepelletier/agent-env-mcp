@@ -1,6 +1,6 @@
 {
   "name": "@brycepelletier/agent-env-mcp",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Hardened MCP gateway for reusable containerized software-engineering environments.",
   "type": "module",
   "bin": {
@@ -12,7 +12,11 @@
     "README.md"
   ],
   "engines": {
-    "node": ">=20"
+    "node": ">=20.10"
+  },
+  "scripts": {
+    "link": "node --check ./index.mjs && node --check ./runtime/helper.mjs && npm install && npm link",
+    "unlink": "npm uninstall --global @brycepelletier/agent-env-mcp"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.15.0",

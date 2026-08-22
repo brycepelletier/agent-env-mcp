@@ -11,11 +11,45 @@ services:
 
     environment:
       AGENT_WORKSPACE_ROOT: ${AGENT_CONTAINER_WORKSPACE}
+      AGENT_RUNTIME_ROLE: engineer
 
     volumes:
       - type: bind
         source: ${AGENT_HOST_WORKSPACE}
         target: ${AGENT_CONTAINER_WORKSPACE}
+
+    # Hide the real Git database from the engineering execution domain.
+    # The project must currently be a standard Git checkout with a .git directory.
+    tmpfs:
+      - ${AGENT_CONTAINER_WORKSPACE}/.git:rw,noexec,nosuid,nodev,size=64k,mode=000
+
+    security_opt:
+      - no-new-privileges:true
+
+    cap_drop:
+      - ALL
+
+  git:
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+    user: vscode
+    working_dir: ${AGENT_CONTAINER_WORKSPACE}
+    command: ["sleep", "infinity"]
+    init: true
+
+    environment:
+      AGENT_WORKSPACE_ROOT: ${AGENT_CONTAINER_WORKSPACE}
+      AGENT_RUNTIME_ROLE: git
+
+    volumes:
+      - type: bind
+        source: ${AGENT_HOST_WORKSPACE}
+        target: ${AGENT_CONTAINER_WORKSPACE}
+
+    # Local Git only. Remote Git/GitHub belongs to the GitHub MCP trust domain.
+    network_mode: none
 
     security_opt:
       - no-new-privileges:true

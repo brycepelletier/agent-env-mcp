@@ -5,6 +5,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import packageJson from "./package.json" with { type: "json" };
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
@@ -13,13 +14,13 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 
-const VERSION = "0.2.1";
-
+const VERSION = packageJson.version;
 const SERVER_ROOT = path.dirname(fileURLToPath(import.meta.url));
 const RUNTIME_DIR = path.join(SERVER_ROOT, "runtime");
 const COMPOSE_FILE = path.join(RUNTIME_DIR, "compose.yaml");
 
 const AGENT_SERVICE = "agent";
+const GIT_SERVICE = "git";
 const IDLE_TIMEOUT_MS = 15 * 60 * 1000;
 const MAX_CONTROLLER_OUTPUT_BYTES = 1024 * 1024;
 
@@ -52,15 +53,11 @@ function projectSlugFromWorkspace(workspace) {
 
 function comparableHostPath(value) {
   const normalized = path.normalize(value);
-
-  return process.platform === "win32"
-    ? normalized.toLowerCase()
-    : normalized;
+  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
 }
 
 function createRuntime(hostWorkspace) {
   const projectSlug = projectSlugFromWorkspace(hostWorkspace);
-
   const workspaceHash = createHash("sha256")
     .update(comparableHostPath(hostWorkspace))
     .digest("hex")
@@ -78,8 +75,7 @@ function sameRuntime(a, b) {
   return Boolean(
     a &&
       b &&
-      comparableHostPath(a.hostWorkspace) ===
-        comparableHostPath(b.hostWorkspace)
+      comparableHostPath(a.hostWorkspace) === comparableHostPath(b.hostWorkspace)
   );
 }
 
@@ -109,12 +105,9 @@ async function discoverWorkspaceRoot() {
     );
   }
 
-  const root = roots[0];
-
   let rootUrl;
-
   try {
-    rootUrl = new URL(root.uri);
+    rootUrl = new URL(roots[0].uri);
   } catch (error) {
     throw new Error("VS Code returned an invalid workspace-root URI.", {
       cause: error,
@@ -136,7 +129,6 @@ async function discoverWorkspaceRoot() {
   }
 
   const parsed = path.parse(resolved);
-
   if (path.normalize(resolved) === path.normalize(parsed.root)) {
     throw new Error(
       "Refusing to mount an entire filesystem root as the agent workspace."
@@ -149,9 +141,7 @@ async function discoverWorkspaceRoot() {
 function sanitizeControllerText(value, selectedRuntime = runtime) {
   if (!value) return "";
 
-  let result = String(value)
-    .split(SERVER_ROOT)
-    .join("[agent-env-mcp]");
+  let result = String(value).split(SERVER_ROOT).join("[agent-env-mcp]");
 
   if (selectedRuntime?.hostWorkspace) {
     result = result
@@ -187,45 +177,31 @@ function runProcess(
 
     const finish = (fn, value) => {
       if (settled) return;
-
       settled = true;
-
-      if (timer) {
-        clearTimeout(timer);
-      }
-
+      if (timer) clearTimeout(timer);
       fn(value);
     };
 
     const append = (current, chunk, streamName) => {
       const next = Buffer.concat([current, chunk]);
-
       if (next.length > maxOutputBytes) {
         child.kill();
-
         finish(
           reject,
           new Error(`${streamName} exceeded the controller output limit.`)
         );
-
         return current;
       }
-
       return next;
     };
 
     child.stdout.on("data", (chunk) => {
       stdout = append(stdout, chunk, "stdout");
     });
-
     child.stderr.on("data", (chunk) => {
       stderr = append(stderr, chunk, "stderr");
     });
-
-    child.on("error", (error) => {
-      finish(reject, error);
-    });
-
+    child.on("error", (error) => finish(reject, error));
     child.on("close", (code, signal) => {
       finish(resolve, {
         code: code ?? -1,
@@ -237,11 +213,7 @@ function runProcess(
 
     timer = setTimeout(() => {
       child.kill();
-
-      finish(
-        reject,
-        new Error(`Process timed out after ${timeoutMs} ms.`)
-      );
+      finish(reject, new Error(`Process timed out after ${timeoutMs} ms.`));
     }, timeoutMs);
 
     child.stdin.end(input || undefined);
@@ -268,8 +240,7 @@ async function dockerCompose(selectedRuntime, args, options = {}) {
       env: {
         ...process.env,
         AGENT_HOST_WORKSPACE: selectedRuntime.hostWorkspace,
-        AGENT_CONTAINER_WORKSPACE:
-          selectedRuntime.containerWorkspace,
+        AGENT_CONTAINER_WORKSPACE: selectedRuntime.containerWorkspace,
       },
     }
   );
@@ -279,9 +250,7 @@ async function bindCurrentRuntime() {
   const hostWorkspace = await discoverWorkspaceRoot();
   const candidate = createRuntime(hostWorkspace);
 
-  if (sameRuntime(runtime, candidate)) {
-    return runtime;
-  }
+  if (sameRuntime(runtime, candidate)) return runtime;
 
   if (activeCommands > 0) {
     throw new Error(
@@ -294,22 +263,26 @@ async function bindCurrentRuntime() {
   }
 
   runtime = candidate;
-
   return runtime;
 }
 
 async function helperRaw(
   selectedRuntime,
+  service,
   operation,
   payload,
   timeoutMs = 60_000
 ) {
+  if (service !== AGENT_SERVICE && service !== GIT_SERVICE) {
+    throw new Error("Invalid agent-env runtime service.");
+  }
+
   const result = await dockerCompose(
     selectedRuntime,
     [
       "exec",
       "-T",
-      AGENT_SERVICE,
+      service,
       "node",
       "/opt/agent-env/helper.mjs",
       operation,
@@ -321,7 +294,6 @@ async function helperRaw(
   );
 
   let parsed;
-
   try {
     parsed = JSON.parse(result.stdout || "{}");
   } catch (error) {
@@ -337,10 +309,7 @@ async function helperRaw(
   if (result.code !== 0 || parsed.ok === false) {
     throw new Error(
       parsed.error ||
-        sanitizeControllerText(
-          result.stderr,
-          selectedRuntime
-        ) ||
+        sanitizeControllerText(result.stderr, selectedRuntime) ||
         "Agent runtime operation failed."
     );
   }
@@ -348,26 +317,39 @@ async function helperRaw(
   return parsed.result;
 }
 
+async function verifyServices(selectedRuntime) {
+  const engineer = await helperRaw(
+    selectedRuntime,
+    AGENT_SERVICE,
+    "verify",
+    {},
+    15_000
+  );
+
+  const git = await helperRaw(
+    selectedRuntime,
+    GIT_SERVICE,
+    "verify",
+    {},
+    15_000
+  );
+
+  if (engineer.role !== "engineer" || git.role !== "git") {
+    throw new Error("Agent runtime service roles were not verified correctly.");
+  }
+
+  return engineer;
+}
+
 async function prepareEnvironmentInner() {
   lastActivity = Date.now();
-
   const selectedRuntime = await bindCurrentRuntime();
 
   if (environmentStarted) {
     try {
-      const verified = await helperRaw(
-        selectedRuntime,
-        "verify",
-        {},
-        15_000
-      );
-
+      const verification = await verifyServices(selectedRuntime);
       lastActivity = Date.now();
-
-      return {
-        runtime: selectedRuntime,
-        verification: verified,
-      };
+      return { runtime: selectedRuntime, verification };
     } catch {
       environmentStarted = false;
     }
@@ -375,15 +357,8 @@ async function prepareEnvironmentInner() {
 
   const up = await dockerCompose(
     selectedRuntime,
-    [
-      "up",
-      "-d",
-      "--build",
-      "--remove-orphans",
-    ],
-    {
-      timeoutMs: 5 * 60_000,
-    }
+    ["up", "-d", "--build", "--remove-orphans"],
+    { timeoutMs: 5 * 60_000 }
   );
 
   if (up.code !== 0) {
@@ -399,17 +374,8 @@ async function prepareEnvironmentInner() {
   lastActivity = Date.now();
 
   try {
-    const verified = await helperRaw(
-      selectedRuntime,
-      "verify",
-      {},
-      20_000
-    );
-
-    return {
-      runtime: selectedRuntime,
-      verification: verified,
-    };
+    const verification = await verifyServices(selectedRuntime);
+    return { runtime: selectedRuntime, verification };
   } catch (error) {
     environmentStarted = false;
     throw error;
@@ -422,29 +388,27 @@ async function prepareEnvironment() {
       preparePromise = null;
     });
   }
-
   return preparePromise;
 }
 
 async function ensureEnvironment() {
-  const prepared = await prepareEnvironment();
-
-  return prepared.verification;
+  return (await prepareEnvironment()).verification;
 }
 
 async function invokeHelper(
+  service,
   operation,
   payload,
   timeoutMs = 60_000
 ) {
   const prepared = await prepareEnvironment();
-
   activeCommands++;
   lastActivity = Date.now();
 
   try {
     return await helperRaw(
       prepared.runtime,
+      service,
       operation,
       payload,
       timeoutMs
@@ -455,26 +419,13 @@ async function invokeHelper(
   }
 }
 
-async function releaseEnvironment(
-  selectedRuntime = runtime
-) {
-  if (
-    !selectedRuntime ||
-    !environmentStarted ||
-    activeCommands > 0
-  ) {
-    return;
-  }
+async function releaseEnvironment(selectedRuntime = runtime) {
+  if (!selectedRuntime || !environmentStarted || activeCommands > 0) return;
 
   const down = await dockerCompose(
     selectedRuntime,
-    [
-      "down",
-      "--remove-orphans",
-    ],
-    {
-      timeoutMs: 2 * 60_000,
-    }
+    ["down", "--remove-orphans"],
+    { timeoutMs: 2 * 60_000 }
   );
 
   if (down.code !== 0) {
@@ -490,24 +441,12 @@ async function releaseEnvironment(
 }
 
 setInterval(async () => {
-  if (
-    !environmentStarted ||
-    activeCommands > 0 ||
-    preparePromise
-  ) {
-    return;
-  }
-
-  if (Date.now() - lastActivity < IDLE_TIMEOUT_MS) {
-    return;
-  }
+  if (!environmentStarted || activeCommands > 0 || preparePromise) return;
+  if (Date.now() - lastActivity < IDLE_TIMEOUT_MS) return;
 
   try {
     await releaseEnvironment();
-
-    console.error(
-      "agent-env: stopped idle environment after 15 minutes."
-    );
+    console.error("agent-env: stopped idle environment after 15 minutes.");
   } catch (error) {
     console.error(
       "agent-env: idle shutdown failed:",
@@ -517,10 +456,7 @@ setInterval(async () => {
 }, 60_000).unref();
 
 async function gracefulShutdown(signal) {
-  if (shuttingDown) {
-    return;
-  }
-
+  if (shuttingDown) return;
   shuttingDown = true;
 
   try {
@@ -537,40 +473,18 @@ async function gracefulShutdown(signal) {
   }
 }
 
-process.on(
-  "SIGINT",
-  () => void gracefulShutdown("SIGINT")
-);
-
-process.on(
-  "SIGTERM",
-  () => void gracefulShutdown("SIGTERM")
-);
+process.on("SIGINT", () => void gracefulShutdown("SIGINT"));
+process.on("SIGTERM", () => void gracefulShutdown("SIGTERM"));
 
 const listDirectoryArgs = z.object({
   path: z.string().max(4096).optional().default("."),
-  max_depth: z
-    .number()
-    .int()
-    .min(0)
-    .max(4)
-    .optional()
-    .default(2),
+  max_depth: z.number().int().min(0).max(4).optional().default(2),
 });
 
 const readFileArgs = z.object({
   path: z.string().min(1).max(4096),
-  start_line: z
-    .number()
-    .int()
-    .min(1)
-    .optional()
-    .default(1),
-  end_line: z
-    .number()
-    .int()
-    .min(1)
-    .optional(),
+  start_line: z.number().int().min(1).optional().default(1),
+  end_line: z.number().int().min(1).optional(),
 });
 
 const searchWorkspaceArgs = z.object({
@@ -578,245 +492,129 @@ const searchWorkspaceArgs = z.object({
   path: z.string().max(4096).optional().default("."),
   glob: z.string().max(1024).optional(),
   regex: z.boolean().optional().default(false),
-  max_results: z
-    .number()
-    .int()
-    .min(1)
-    .max(100)
-    .optional()
-    .default(50),
+  max_results: z.number().int().min(1).max(100).optional().default(50),
 });
 
 const workspaceEditArgs = z.object({
-  operation: z.enum([
-    "create",
-    "replace",
-    "delete",
-  ]),
+  operation: z.enum(["create", "replace", "delete"]),
   path: z.string().min(1).max(4096),
-  old_text: z
-    .string()
-    .max(1024 * 1024)
-    .optional(),
-  new_text: z
-    .string()
-    .max(1024 * 1024)
-    .optional(),
+  old_text: z.string().max(1024 * 1024).optional(),
+  new_text: z.string().max(1024 * 1024).optional(),
 });
 
 const runCommandArgs = z.object({
   program: z.string().min(1).max(4096),
-  args: z
-    .array(
-      z.string().max(16 * 1024)
-    )
-    .max(128)
-    .optional()
-    .default([]),
+  args: z.array(z.string().max(16 * 1024)).max(128).optional().default([]),
   cwd: z.string().max(4096).optional().default("."),
-  timeout_seconds: z
-    .number()
-    .int()
-    .min(1)
-    .max(900)
-    .optional()
-    .default(300),
+  timeout_seconds: z.number().int().min(1).max(900).optional().default(300),
 });
 
 const gitCommandArgs = z.object({
-  args: z
-    .array(
-      z.string().max(16 * 1024)
-    )
-    .max(128)
-    .optional()
-    .default([]),
+  args: z.array(z.string().max(16 * 1024)).max(128).optional().default([]),
   cwd: z.string().max(4096).optional().default("."),
-  timeout_seconds: z
-    .number()
-    .int()
-    .min(1)
-    .max(900)
-    .optional()
-    .default(300),
+  timeout_seconds: z.number().int().min(1).max(900).optional().default(300),
 });
 
-server.setRequestHandler(
-  ListToolsRequestSchema,
-  async () => ({
-    tools: [
-      {
-        name: "ensure_environment",
-        description:
-          "Start and verify the authorized Linux agent environment.",
-        inputSchema: {
-          type: "object",
-          properties: {},
-          additionalProperties: false,
-        },
+server.setRequestHandler(ListToolsRequestSchema, async () => ({
+  tools: [
+    {
+      name: "ensure_environment",
+      description: "Start and verify the authorized Linux agent environment.",
+      inputSchema: {
+        type: "object",
+        properties: {},
+        additionalProperties: false,
       },
-      {
-        name: "list_directory",
-        description:
-          "List files under the authorized project workspace.",
-        inputSchema: {
-          type: "object",
-          properties: {
-            path: {
-              type: "string",
-            },
-            max_depth: {
-              type: "integer",
-              minimum: 0,
-              maximum: 4,
-            },
-          },
-          additionalProperties: false,
+    },
+    {
+      name: "list_directory",
+      description: "List files under the authorized project workspace.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          path: { type: "string" },
+          max_depth: { type: "integer", minimum: 0, maximum: 4 },
         },
+        additionalProperties: false,
       },
-      {
-        name: "read_file",
-        description:
-          "Read a bounded line range from a workspace text file.",
-        inputSchema: {
-          type: "object",
-          properties: {
-            path: {
-              type: "string",
-            },
-            start_line: {
-              type: "integer",
-              minimum: 1,
-            },
-            end_line: {
-              type: "integer",
-              minimum: 1,
-            },
-          },
-          required: ["path"],
-          additionalProperties: false,
+    },
+    {
+      name: "read_file",
+      description: "Read a bounded line range from a workspace text file.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          path: { type: "string" },
+          start_line: { type: "integer", minimum: 1 },
+          end_line: { type: "integer", minimum: 1 },
         },
+        required: ["path"],
+        additionalProperties: false,
       },
-      {
-        name: "search_workspace",
-        description:
-          "Search text within the authorized project workspace.",
-        inputSchema: {
-          type: "object",
-          properties: {
-            query: {
-              type: "string",
-            },
-            path: {
-              type: "string",
-            },
-            glob: {
-              type: "string",
-            },
-            regex: {
-              type: "boolean",
-            },
-            max_results: {
-              type: "integer",
-              minimum: 1,
-              maximum: 100,
-            },
-          },
-          required: ["query"],
-          additionalProperties: false,
+    },
+    {
+      name: "search_workspace",
+      description: "Search text within the authorized project workspace.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          query: { type: "string" },
+          path: { type: "string" },
+          glob: { type: "string" },
+          regex: { type: "boolean" },
+          max_results: { type: "integer", minimum: 1, maximum: 100 },
         },
+        required: ["query"],
+        additionalProperties: false,
       },
-      {
-        name: "workspace_edit",
-        description:
-          "Create, exact-replace, or delete one workspace file.",
-        inputSchema: {
-          type: "object",
-          properties: {
-            operation: {
-              type: "string",
-              enum: [
-                "create",
-                "replace",
-                "delete",
-              ],
-            },
-            path: {
-              type: "string",
-            },
-            old_text: {
-              type: "string",
-            },
-            new_text: {
-              type: "string",
-            },
-          },
-          required: [
-            "operation",
-            "path",
-          ],
-          additionalProperties: false,
+    },
+    {
+      name: "workspace_edit",
+      description: "Create, exact-replace, or delete one workspace file.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          operation: { type: "string", enum: ["create", "replace", "delete"] },
+          path: { type: "string" },
+          old_text: { type: "string" },
+          new_text: { type: "string" },
         },
+        required: ["operation", "path"],
+        additionalProperties: false,
       },
-      {
-        name: "run_command",
-        description:
-          "Run one non-shell program inside the authorized agent container.",
-        inputSchema: {
-          type: "object",
-          properties: {
-            program: {
-              type: "string",
-            },
-            args: {
-              type: "array",
-              items: {
-                type: "string",
-              },
-              maxItems: 128,
-            },
-            cwd: {
-              type: "string",
-            },
-            timeout_seconds: {
-              type: "integer",
-              minimum: 1,
-              maximum: 900,
-            },
-          },
-          required: ["program"],
-          additionalProperties: false,
+    },
+    {
+      name: "run_command",
+      description:
+        "Run one non-shell program in the engineering container, where the real .git metadata is masked.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          program: { type: "string" },
+          args: { type: "array", items: { type: "string" }, maxItems: 128 },
+          cwd: { type: "string" },
+          timeout_seconds: { type: "integer", minimum: 1, maximum: 900 },
         },
+        required: ["program"],
+        additionalProperties: false,
       },
-      {
-        name: "git_command",
-        description:
-          "Run Git inside the authorized agent container.",
-        inputSchema: {
-          type: "object",
-          properties: {
-            args: {
-              type: "array",
-              items: {
-                type: "string",
-              },
-              maxItems: 128,
-            },
-            cwd: {
-              type: "string",
-            },
-            timeout_seconds: {
-              type: "integer",
-              minimum: 1,
-              maximum: 900,
-            },
-          },
-          additionalProperties: false,
+    },
+    {
+      name: "git_command",
+      description:
+        "Run an allowlisted local Git operation in the isolated Git container. Network Git operations are unavailable.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          args: { type: "array", items: { type: "string" }, maxItems: 128 },
+          cwd: { type: "string" },
+          timeout_seconds: { type: "integer", minimum: 1, maximum: 900 },
         },
+        additionalProperties: false,
       },
-    ],
-  })
-);
+    },
+  ],
+}));
 
 function textResult(value) {
   return {
@@ -824,134 +622,84 @@ function textResult(value) {
       {
         type: "text",
         text:
-          typeof value === "string"
-            ? value
-            : JSON.stringify(value, null, 2),
+          typeof value === "string" ? value : JSON.stringify(value, null, 2),
       },
     ],
   };
 }
 
-server.setRequestHandler(
-  CallToolRequestSchema,
-  async (request) => {
-    const {
-      name,
-      arguments: rawArgs = {},
-    } = request.params;
+server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  const { name, arguments: rawArgs = {} } = request.params;
 
-    if (name === "ensure_environment") {
-      return textResult(
-        await ensureEnvironment()
-      );
-    }
+  if (name === "ensure_environment") {
+    return textResult(await ensureEnvironment());
+  }
 
-    if (name === "list_directory") {
-      const args =
-        listDirectoryArgs.parse(rawArgs);
-
-      return textResult(
-        await invokeHelper(
-          "list_directory",
-          args,
-          30_000
-        )
-      );
-    }
-
-    if (name === "read_file") {
-      const args =
-        readFileArgs.parse(rawArgs);
-
-      return textResult(
-        await invokeHelper(
-          "read_file",
-          args,
-          30_000
-        )
-      );
-    }
-
-    if (name === "search_workspace") {
-      const args =
-        searchWorkspaceArgs.parse(rawArgs);
-
-      return textResult(
-        await invokeHelper(
-          "search_workspace",
-          args,
-          60_000
-        )
-      );
-    }
-
-    if (name === "workspace_edit") {
-      const args =
-        workspaceEditArgs.parse(rawArgs);
-
-      if (
-        args.operation === "create" &&
-        args.new_text === undefined
-      ) {
-        throw new Error(
-          "create requires new_text."
-        );
-      }
-
-      if (
-        args.operation === "replace" &&
-        (
-          args.old_text === undefined ||
-          args.new_text === undefined
-        )
-      ) {
-        throw new Error(
-          "replace requires old_text and new_text."
-        );
-      }
-
-      return textResult(
-        await invokeHelper(
-          "workspace_edit",
-          args,
-          60_000
-        )
-      );
-    }
-
-    if (name === "run_command") {
-      const args =
-        runCommandArgs.parse(rawArgs);
-
-      return textResult(
-        await invokeHelper(
-          "run_command",
-          args,
-          args.timeout_seconds * 1000 + 5_000
-        )
-      );
-    }
-
-    if (name === "git_command") {
-      const args =
-        gitCommandArgs.parse(rawArgs);
-
-      return textResult(
-        await invokeHelper(
-          "git_command",
-          args,
-          args.timeout_seconds * 1000 + 5_000
-        )
-      );
-    }
-
-    throw new Error(
-      `Unknown tool: ${name}`
+  if (name === "list_directory") {
+    const args = listDirectoryArgs.parse(rawArgs);
+    return textResult(
+      await invokeHelper(AGENT_SERVICE, "list_directory", args, 30_000)
     );
   }
-);
 
-const transport =
-  new StdioServerTransport();
+  if (name === "read_file") {
+    const args = readFileArgs.parse(rawArgs);
+    return textResult(
+      await invokeHelper(AGENT_SERVICE, "read_file", args, 30_000)
+    );
+  }
 
+  if (name === "search_workspace") {
+    const args = searchWorkspaceArgs.parse(rawArgs);
+    return textResult(
+      await invokeHelper(AGENT_SERVICE, "search_workspace", args, 60_000)
+    );
+  }
+
+  if (name === "workspace_edit") {
+    const args = workspaceEditArgs.parse(rawArgs);
+
+    if (args.operation === "create" && args.new_text === undefined) {
+      throw new Error("create requires new_text.");
+    }
+    if (
+      args.operation === "replace" &&
+      (args.old_text === undefined || args.new_text === undefined)
+    ) {
+      throw new Error("replace requires old_text and new_text.");
+    }
+
+    return textResult(
+      await invokeHelper(AGENT_SERVICE, "workspace_edit", args, 60_000)
+    );
+  }
+
+  if (name === "run_command") {
+    const args = runCommandArgs.parse(rawArgs);
+    return textResult(
+      await invokeHelper(
+        AGENT_SERVICE,
+        "run_command",
+        args,
+        args.timeout_seconds * 1000 + 5_000
+      )
+    );
+  }
+
+  if (name === "git_command") {
+    const args = gitCommandArgs.parse(rawArgs);
+    return textResult(
+      await invokeHelper(
+        GIT_SERVICE,
+        "git_command",
+        args,
+        args.timeout_seconds * 1000 + 5_000
+      )
+    );
+  }
+
+  throw new Error(`Unknown tool: ${name}`);
+});
+
+const transport = new StdioServerTransport();
 await server.connect(transport);

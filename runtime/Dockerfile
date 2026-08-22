@@ -11,12 +11,14 @@ RUN apt-get update \
         cmake \
         curl \
         git \
+        gnupg \
         ninja-build \
         python3 \
         python3-pip \
         python3-venv \
         ripgrep \
         unzip \
+        wget \
         xz-utils \
     && rm -rf /var/lib/apt/lists/*
 
@@ -30,7 +32,7 @@ RUN python3 -m venv /opt/platformio \
 
 COPY helper.mjs /opt/agent-env/helper.mjs
 
-RUN printf '%s\n' 'agent-env-runtime-v1' > /opt/agent-env/runtime-marker \
+RUN printf '%s\n' 'agent-env-runtime-v2' > /opt/agent-env/runtime-marker \
     && chown -R root:root /opt/agent-env \
     && chmod 0555 /opt/agent-env/helper.mjs \
     && chmod 0444 /opt/agent-env/runtime-marker

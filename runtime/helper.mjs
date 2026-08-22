@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 
 const WORKSPACE_ROOT = process.env.AGENT_WORKSPACE_ROOT;
+const RUNTIME_ROLE = process.env.AGENT_RUNTIME_ROLE;
 const RUNTIME_MARKER = "/opt/agent-env/runtime-marker";
 
 const MAX_FILE_BYTES = 2 * 1024 * 1024;
@@ -43,10 +44,33 @@ const BLOCKED_PROGRAMS = new Set([
   "env",
 ]);
 
+const ALLOWED_GIT_SUBCOMMANDS = new Set([
+  "status",
+  "diff",
+  "log",
+  "show",
+  "rev-parse",
+  "branch",
+  "switch",
+  "add",
+  "commit",
+  "merge",
+  "rebase",
+  "cherry-pick",
+  "tag",
+  "stash",
+]);
+
 function fail(message) {
   const error = new Error(message);
   error.isAgentEnvError = true;
   throw error;
+}
+
+function requireRole(expected) {
+  if (RUNTIME_ROLE !== expected) {
+    fail(`Operation requires the '${expected}' runtime role.`);
+  }
 }
 
 async function readStdin() {
@@ -75,7 +99,6 @@ function normalizedRelative(input = ".") {
   if (path.posix.isAbsolute(input)) fail("Absolute paths are not allowed.");
 
   const normalized = path.posix.normalize(input || ".");
-
   if (normalized === ".." || normalized.startsWith("../")) {
     fail("Path escapes the authorized workspace.");
   }
@@ -119,12 +142,10 @@ async function resolveCreateTarget(relativeInput) {
 
   const root = await workspaceRealRoot();
   const lexical = path.resolve(root, relative);
-
   if (!isWithin(root, lexical)) fail("Path escapes the authorized workspace.");
 
   const parent = path.dirname(lexical);
   const realParent = await fsp.realpath(parent);
-
   if (!isWithin(root, realParent)) {
     fail("Parent directory escapes the authorized workspace through a symlink.");
   }
@@ -179,30 +200,15 @@ function sanitizedChildEnvironment() {
   }
 
   result.AGENT_WORKSPACE_ROOT = WORKSPACE_ROOT;
+  result.AGENT_RUNTIME_ROLE = RUNTIME_ROLE;
   result.GIT_EDITOR = "true";
   result.GIT_SEQUENCE_EDITOR = "true";
   result.GIT_MERGE_AUTOEDIT = "no";
   result.GIT_TERMINAL_PROMPT = "0";
+  result.GIT_CONFIG_NOSYSTEM = "1";
+  result.GIT_CONFIG_GLOBAL = "/dev/null";
   return result;
 }
-
-
-const ALLOWED_GIT_SUBCOMMANDS = new Set([
-  "status",
-  "diff",
-  "log",
-  "show",
-  "rev-parse",
-  "branch",
-  "switch",
-  "add",
-  "commit",
-  "merge",
-  "rebase",
-  "cherry-pick",
-  "tag",
-  "stash",
-]);
 
 function validateGitArgs(args) {
   if (!Array.isArray(args) || args.length === 0) {
@@ -216,17 +222,13 @@ function validateGitArgs(args) {
     );
   }
 
-  const blockedAny = ["--ext-diff", "--force", "-f"];
-  if (args.some((arg) => blockedAny.includes(arg))) {
+  if (args.some((arg) => ["--ext-diff", "--force", "-f"].includes(arg))) {
     fail("Force/external-execution Git options are blocked.");
   }
 
   if (
     args.some(
-      (arg) =>
-        arg === "--exec" ||
-        arg === "-x" ||
-        arg.startsWith("--exec=")
+      (arg) => arg === "--exec" || arg === "-x" || arg.startsWith("--exec=")
     )
   ) {
     fail("Git options that execute arbitrary commands are blocked.");
@@ -280,6 +282,10 @@ function hardenedGitArgs(args) {
     "commit.gpgSign=false",
     "-c",
     "tag.gpgSign=false",
+    "-c",
+    "credential.helper=",
+    "-c",
+    "protocol.file.allow=never",
     ...args,
   ];
 }
@@ -318,13 +324,11 @@ async function runProgram({
   if (!cwdStat.isDirectory()) fail("Command cwd must be a directory.");
 
   let executable = program;
-
   if (program.includes("/")) {
     const candidate = normalizedRelative(
       path.posix.join(cwdResolved.relative, program)
     );
-    const resolvedProgram = await resolveExisting(candidate);
-    executable = resolvedProgram.path;
+    executable = (await resolveExisting(candidate)).path;
   }
 
   const timeoutMs = Math.max(1, Math.min(900, timeout_seconds)) * 1000;
@@ -347,7 +351,6 @@ async function runProgram({
 
     const capture = (chunks, chunk, isStdout) => {
       const current = isStdout ? stdoutBytes : stderrBytes;
-
       if (current >= MAX_COMMAND_STREAM_BYTES * 4) {
         if (isStdout) stdoutOverflow = true;
         else stderrOverflow = true;
@@ -361,7 +364,6 @@ async function runProgram({
 
     child.stdout.on("data", (chunk) => capture(stdoutChunks, chunk, true));
     child.stderr.on("data", (chunk) => capture(stderrChunks, chunk, false));
-
     child.on("error", reject);
 
     const hardKill = () => {
@@ -396,24 +398,22 @@ async function runProgram({
 }
 
 async function verify() {
-  if (process.platform !== "linux") {
-    fail("Agent runtime is not Linux.");
-  }
+  if (process.platform !== "linux") fail("Agent runtime is not Linux.");
 
   const marker = await fsp.readFile(RUNTIME_MARKER, "utf8");
-  if (marker.trim() !== "agent-env-runtime-v1") {
+  if (marker.trim() !== "agent-env-runtime-v2") {
     fail("Agent runtime marker is invalid.");
   }
 
-  const user = os.userInfo().username;
-  if (user !== "vscode") {
-    fail(`Unexpected runtime user '${user}'.`);
+  if (RUNTIME_ROLE !== "engineer" && RUNTIME_ROLE !== "git") {
+    fail("Agent runtime role is invalid.");
   }
 
-  const root = await workspaceRealRoot();
-  const stat = await fsp.stat(root);
+  const user = os.userInfo().username;
+  if (user !== "vscode") fail(`Unexpected runtime user '${user}'.`);
 
-  if (!stat.isDirectory()) {
+  const root = await workspaceRealRoot();
+  if (!(await fsp.stat(root)).isDirectory()) {
     fail("Authorized workspace root is not a directory.");
   }
 
@@ -426,6 +426,7 @@ async function verify() {
     authorized: true,
     platform: "linux",
     container: true,
+    role: RUNTIME_ROLE,
     user,
     project: path.basename(root),
     workspace: root,
@@ -434,9 +435,9 @@ async function verify() {
 
 async function listDirectory({ path: requested = ".", max_depth = 2 }) {
   const resolved = await resolveExisting(requested);
-  const stat = await fsp.stat(resolved.path);
-
-  if (!stat.isDirectory()) fail("list_directory path must be a directory.");
+  if (!(await fsp.stat(resolved.path)).isDirectory()) {
+    fail("list_directory path must be a directory.");
+  }
 
   const results = [];
   let truncated = false;
@@ -480,35 +481,26 @@ async function listDirectory({ path: requested = ".", max_depth = 2 }) {
   }
 
   await walk(resolved.path, resolved.relative, 0);
-
-  return {
-    path: resolved.relative,
-    entries: results,
-    truncated,
-  };
+  return { path: resolved.relative, entries: results, truncated };
 }
 
-async function readFile({
-  path: requested,
-  start_line = 1,
-  end_line = undefined,
-}) {
+async function readFile({ path: requested, start_line = 1, end_line }) {
   const resolved = await resolveExisting(requested);
   const stat = await fsp.stat(resolved.path);
 
   if (!stat.isFile()) fail("read_file path must be a regular file.");
-  if (stat.size > MAX_FILE_BYTES) {
-    fail("File exceeds the 2 MiB read limit.");
-  }
+  if (stat.size > MAX_FILE_BYTES) fail("File exceeds the 2 MiB read limit.");
 
   const buffer = await fsp.readFile(resolved.path);
-
   if (buffer.subarray(0, 8192).includes(0)) {
     fail("Binary files are not readable through read_file.");
   }
 
-  const text = buffer.toString("utf8");
-  const lines = text.split(/\r?\n/);
+  const lines = buffer.toString("utf8").split(/\r?\n/);
+  if (start_line > lines.length) {
+    fail(`start_line exceeds file length (${lines.length} lines).`);
+  }
+
   const requestedEnd = end_line ?? start_line + MAX_READ_LINES - 1;
   const actualEnd = Math.min(
     lines.length,
@@ -516,11 +508,7 @@ async function readFile({
     start_line + MAX_READ_LINES - 1
   );
 
-  if (start_line > lines.length) {
-    fail(`start_line exceeds file length (${lines.length} lines).`);
-  }
-
-  const selected = lines
+  const content = lines
     .slice(start_line - 1, actualEnd)
     .map((line, index) => `${start_line + index}: ${line}`)
     .join("\n");
@@ -531,7 +519,7 @@ async function readFile({
     end_line: actualEnd,
     total_lines: lines.length,
     truncated: actualEnd < requestedEnd || actualEnd < lines.length,
-    content: selected,
+    content,
   };
 }
 
@@ -607,7 +595,6 @@ async function searchWorkspace({
 
   if (!regex) args.push("--fixed-strings");
   if (glob) args.push("--glob", glob);
-
   args.push("--", query, resolved.path);
 
   const result = await runRawProgram(
@@ -626,27 +613,19 @@ async function searchWorkspace({
     ? WORKSPACE_ROOT
     : `${WORKSPACE_ROOT}/`;
 
-  const lines = allLines.slice(0, max_results).map((line) =>
-    line.startsWith(rootPrefix) ? line.slice(rootPrefix.length) : line
-  );
-
   return {
     query,
     path: resolved.relative,
-    matches: lines,
+    matches: allLines.slice(0, max_results).map((line) =>
+      line.startsWith(rootPrefix) ? line.slice(rootPrefix.length) : line
+    ),
     truncated: result.truncated || allLines.length > max_results,
   };
 }
 
-async function workspaceEdit({
-  operation,
-  path: requested,
-  old_text,
-  new_text,
-}) {
+async function workspaceEdit({ operation, path: requested, old_text, new_text }) {
   if (operation === "create") {
     if (new_text === undefined) fail("create requires new_text.");
-
     const target = await resolveCreateTarget(requested);
 
     try {
@@ -673,13 +652,11 @@ async function workspaceEdit({
 
     const target = await resolveExisting(requested);
     const stat = await fsp.stat(target.path);
-
     if (!stat.isFile()) fail("replace target must be a regular file.");
     if (stat.size > MAX_FILE_BYTES) fail("replace target exceeds 2 MiB.");
 
     const current = await fsp.readFile(target.path, "utf8");
     const occurrences = current.split(old_text).length - 1;
-
     if (occurrences !== 1) {
       fail(`replace requires exactly one old_text match; found ${occurrences}.`);
     }
@@ -708,9 +685,9 @@ async function workspaceEdit({
 
   if (operation === "delete") {
     const target = await resolveExisting(requested);
-    const stat = await fsp.stat(target.path);
-
-    if (!stat.isFile()) fail("delete can remove only a regular file.");
+    if (!(await fsp.stat(target.path)).isFile()) {
+      fail("delete can remove only a regular file.");
+    }
 
     await fsp.unlink(target.path);
     return { operation, path: target.relative, changed: true };
@@ -723,33 +700,39 @@ async function main() {
   const operation = process.argv[2];
   const payload = await readStdin();
 
-  let result;
-
   if (operation === "verify") {
-    result = await verify();
-  } else {
-    await verify();
+    process.stdout.write(JSON.stringify({ ok: true, result: await verify() }));
+    return;
+  }
 
-    if (operation === "list_directory") {
-      result = await listDirectory(payload);
-    } else if (operation === "read_file") {
-      result = await readFile(payload);
-    } else if (operation === "search_workspace") {
-      result = await searchWorkspace(payload);
-    } else if (operation === "workspace_edit") {
-      result = await workspaceEdit(payload);
-    } else if (operation === "run_command") {
-      result = await runProgram({ ...payload, allowGit: false });
-    } else if (operation === "git_command") {
-      result = await runProgram({
-        ...payload,
-        program: "git",
-        args: hardenedGitArgs(payload.args ?? []),
-        allowGit: true,
-      });
-    } else {
-      fail(`Unknown helper operation '${operation}'.`);
-    }
+  await verify();
+
+  let result;
+  if (operation === "list_directory") {
+    requireRole("engineer");
+    result = await listDirectory(payload);
+  } else if (operation === "read_file") {
+    requireRole("engineer");
+    result = await readFile(payload);
+  } else if (operation === "search_workspace") {
+    requireRole("engineer");
+    result = await searchWorkspace(payload);
+  } else if (operation === "workspace_edit") {
+    requireRole("engineer");
+    result = await workspaceEdit(payload);
+  } else if (operation === "run_command") {
+    requireRole("engineer");
+    result = await runProgram({ ...payload, allowGit: false });
+  } else if (operation === "git_command") {
+    requireRole("git");
+    result = await runProgram({
+      ...payload,
+      program: "git",
+      args: hardenedGitArgs(payload.args ?? []),
+      allowGit: true,
+    });
+  } else {
+    fail(`Unknown helper operation '${operation}'.`);
   }
 
   process.stdout.write(JSON.stringify({ ok: true, result }));
@@ -765,9 +748,6 @@ main().catch((error) => {
     })
   );
 
-  if (!error?.isAgentEnvError) {
-    console.error(error);
-  }
-
+  if (!error?.isAgentEnvError) console.error(error);
   process.exitCode = 1;
 });
