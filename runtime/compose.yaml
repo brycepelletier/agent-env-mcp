@@ -1,0 +1,24 @@
+services:
+  agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+    user: vscode
+    working_dir: ${AGENT_CONTAINER_WORKSPACE}
+    command: ["sleep", "infinity"]
+    init: true
+
+    environment:
+      AGENT_WORKSPACE_ROOT: ${AGENT_CONTAINER_WORKSPACE}
+
+    volumes:
+      - type: bind
+        source: ${AGENT_HOST_WORKSPACE}
+        target: ${AGENT_CONTAINER_WORKSPACE}
+
+    security_opt:
+      - no-new-privileges:true
+
+    cap_drop:
+      - ALL

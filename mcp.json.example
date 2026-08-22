@@ -1,0 +1,14 @@
+{
+  "servers": {
+    "agent-env": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "D:\\mcp\\agent-env-mcp\\index.mjs"
+      ],
+      "env": {
+        "AGENT_HOST_WORKSPACE": "${workspaceFolder}"
+      }
+    }
+  }
+}

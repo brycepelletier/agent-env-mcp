@@ -1,0 +1,16 @@
+{
+  "name": "agent-env-mcp",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "agent-env-mcp": "./index.mjs"
+  },
+  "scripts": {
+    "start": "node ./index.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.15.0",
+    "zod": "^3.22.0"
+  }
+}
