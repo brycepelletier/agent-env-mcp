@@ -1,13 +1,18 @@
 {
   "name": "agent-env-mcp",
   "version": "0.2.0",
-  "private": true,
+  "description": "Hardened MCP gateway for reusable containerized software-engineering environments.",
   "type": "module",
   "bin": {
     "agent-env-mcp": "./index.mjs"
   },
-  "scripts": {
-    "start": "node ./index.mjs"
+  "files": [
+    "index.mjs",
+    "runtime/**",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.15.0",
