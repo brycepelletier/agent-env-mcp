@@ -13,6 +13,7 @@ import {
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
+import { createShutdownCoordinator } from "./runtime/lifecycle.mjs";
 
 const VERSION = packageJson.version;
 const SERVER_ROOT = path.dirname(fileURLToPath(import.meta.url));
@@ -383,6 +384,9 @@ async function prepareEnvironmentInner() {
 }
 
 async function prepareEnvironment() {
+  if (shuttingDown) {
+    throw new Error("agent-env is shutting down.");
+  }
   if (!preparePromise) {
     preparePromise = prepareEnvironmentInner().finally(() => {
       preparePromise = null;
@@ -419,8 +423,9 @@ async function invokeHelper(
   }
 }
 
-async function releaseEnvironment(selectedRuntime = runtime) {
-  if (!selectedRuntime || !environmentStarted || activeCommands > 0) return;
+async function releaseEnvironment(selectedRuntime = runtime, { force = false } = {}) {
+  if (!selectedRuntime) return;
+  if (!force && (!environmentStarted || activeCommands > 0)) return;
 
   const down = await dockerCompose(
     selectedRuntime,
@@ -441,6 +446,7 @@ async function releaseEnvironment(selectedRuntime = runtime) {
 }
 
 setInterval(async () => {
+  if (shuttingDown) return;
   if (!environmentStarted || activeCommands > 0 || preparePromise) return;
   if (Date.now() - lastActivity < IDLE_TIMEOUT_MS) return;
 
@@ -455,26 +461,31 @@ setInterval(async () => {
   }
 }, 60_000).unref();
 
-async function gracefulShutdown(signal) {
-  if (shuttingDown) return;
-  shuttingDown = true;
-
-  try {
-    if (activeCommands === 0 && !preparePromise) {
-      await releaseEnvironment();
+const shutdown = createShutdownCoordinator({
+  beginShutdown: () => {
+    shuttingDown = true;
+  },
+  waitForPreparation: async () => {
+    try {
+      await preparePromise;
+    } catch {
+      // Forced Compose teardown below also covers partial startup failures.
     }
-  } catch (error) {
-    console.error(
-      `agent-env: shutdown after ${signal} could not release environment:`,
-      sanitizeControllerText(error)
-    );
-  } finally {
-    process.exit(0);
-  }
-}
+  },
+  releaseEnvironment: () => releaseEnvironment(runtime, { force: true }),
+  closeServer: () => server.close(),
+  exit: (exitCode) => process.exit(exitCode),
+});
 
-process.on("SIGINT", () => void gracefulShutdown("SIGINT"));
-process.on("SIGTERM", () => void gracefulShutdown("SIGTERM"));
+process.on("SIGINT", () => void shutdown());
+process.on("SIGTERM", () => void shutdown());
+process.on("SIGHUP", () => void shutdown());
+process.stdin.once("end", () => void shutdown());
+process.stdin.once("close", () => void shutdown());
+process.stdin.once("error", () => void shutdown(1));
+process.stdout.once("error", () => void shutdown(1));
+process.on("uncaughtException", () => void shutdown(1));
+process.on("unhandledRejection", () => void shutdown(1));
 
 const listDirectoryArgs = z.object({
   path: z.string().max(4096).optional().default("."),

@@ -4,6 +4,7 @@ import { spawn } from "node:child_process";
 import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 
 const WORKSPACE_ROOT = process.env.AGENT_WORKSPACE_ROOT;
 const RUNTIME_ROLE = process.env.AGENT_RUNTIME_ROLE;
@@ -91,7 +92,7 @@ async function readStdin() {
   }
 }
 
-function normalizedRelative(input = ".") {
+export function normalizedRelative(input = ".") {
   if (typeof input !== "string") fail("Path must be a string.");
   if (input.includes("\0")) fail("Path contains a NUL byte.");
   if (input.includes("\\")) fail("Use workspace-relative POSIX paths.");
@@ -178,10 +179,10 @@ function boundedText(bufferOrText, limit = MAX_COMMAND_STREAM_BYTES) {
   };
 }
 
-function sanitizedChildEnvironment() {
+export function sanitizedChildEnvironment(sourceEnvironment = process.env) {
   const result = {};
 
-  for (const [key, value] of Object.entries(process.env)) {
+  for (const [key, value] of Object.entries(sourceEnvironment)) {
     if (value === undefined) continue;
 
     const upper = key.toUpperCase();
@@ -210,7 +211,7 @@ function sanitizedChildEnvironment() {
   return result;
 }
 
-function validateGitArgs(args) {
+export function validateGitArgs(args) {
   if (!Array.isArray(args) || args.length === 0) {
     fail("git_command requires a Git subcommand.");
   }
@@ -272,7 +273,7 @@ function validateGitArgs(args) {
   }
 }
 
-function hardenedGitArgs(args) {
+export function hardenedGitArgs(args) {
   validateGitArgs(args);
 
   return [
@@ -290,7 +291,7 @@ function hardenedGitArgs(args) {
   ];
 }
 
-function validateProgram(program, { allowGit = false } = {}) {
+export function validateProgram(program, { allowGit = false } = {}) {
   if (typeof program !== "string" || !program) fail("Program is required.");
   if (program.includes("\0")) fail("Program contains a NUL byte.");
   if (path.isAbsolute(program)) fail("Absolute executable paths are not allowed.");
@@ -738,16 +739,18 @@ async function main() {
   process.stdout.write(JSON.stringify({ ok: true, result }));
 }
 
-main().catch((error) => {
-  process.stdout.write(
-    JSON.stringify({
-      ok: false,
-      error: error?.isAgentEnvError
-        ? error.message
-        : "Agent runtime operation failed.",
-    })
-  );
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((error) => {
+    process.stdout.write(
+      JSON.stringify({
+        ok: false,
+        error: error?.isAgentEnvError
+          ? error.message
+          : "Agent runtime operation failed.",
+      })
+    );
 
-  if (!error?.isAgentEnvError) console.error(error);
-  process.exitCode = 1;
-});
+    if (!error?.isAgentEnvError) console.error(error);
+    process.exitCode = 1;
+  });
+}

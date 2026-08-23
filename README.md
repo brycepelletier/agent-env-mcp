@@ -44,6 +44,39 @@ To remove the global development link:
 npm run unlink
 ```
 
+## Lifecycle
+
+The host-side facade owns one deterministic Docker Compose project for the active
+workspace. An MCP stdin EOF/close, SIGINT, SIGTERM, SIGHUP, or fatal process
+error starts one idempotent shutdown sequence. Shutdown waits for any in-flight
+environment preparation to settle, forces `docker compose down --remove-orphans`
+for the owned project even after a partial startup, closes the MCP server, and
+then exits. VS Code does not need to send a particular signal for containers to
+be released.
+
+The existing 15-minute idle timeout remains a secondary cleanup path. New tool
+calls fail once shutdown begins.
+
+## Testing and validation
+
+Run the policy and lifecycle tests:
+
+```bash
+npm test
+```
+
+Run syntax checks, the test suite, and an npm package dry run together:
+
+```bash
+npm run validate
+```
+
+The tests cover protected workspace paths, child-environment credential
+filtering, blocked executable classes, local-only Git restrictions, hardened Git
+configuration, single-flight shutdown, partial-startup cleanup, and teardown
+failure handling. Docker Compose rendering and image builds remain separate host
+integration checks because they require a running Docker daemon.
+
 ## 0.3.1 acceptance checks
 
 Before removing a project's old `.devcontainer`:
