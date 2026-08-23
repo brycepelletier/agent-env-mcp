@@ -1,15 +1,35 @@
 # @brycepelletier/agent-env-mcp
 
-Reusable, host-side MCP controller for a hardened Linux software-engineering runtime.
+Reusable host-side MCP controller for a hardened Linux software-engineering
+runtime.
 
-## 0.3.1 trust split
+## 0.4.0 trust boundary
 
-The Compose runtime has two execution domains over the same working tree:
+`agent-env-mcp` is software-engineering only. Its single `agent` service can
+inspect, edit, build, test, lint, and debug the active workspace. The real
+`.git` directory is physically masked by a root-owned tmpfs mount, and the
+container receives no GitHub credentials or Docker socket.
 
-- `agent`: used by Software Engineer tools. The real `.git` directory is masked with a root-owned tmpfs mount.
-- `git`: used only by `git_command`. It sees the real `.git` directory and has `network_mode: none`.
+```text
+Software Engineer
+       |
+agent-env-mcp
+       |
+Linux engineering runtime
+       |-- source tree visible
+       |-- .git masked
+       |-- no GitHub credentials
+       `-- no Docker socket
 
-Remote Git/GitHub operations do not belong in this package; they are intended for the separate GitHub MCP trust domain.
+GitHub Operator
+       |
+github-app-mcp
+       `-- all Git and GitHub operations
+```
+
+Version 0.4.0 removes the former `git` service and public `git_command`. That is
+an intentional breaking change: all local and remote Git operations belong to
+`@brycepelletier/github-app-mcp` and the GitHub Operator trust domain.
 
 ## Tools
 
@@ -19,72 +39,86 @@ Remote Git/GitHub operations do not belong in this package; they are intended fo
 - `search_workspace`
 - `workspace_edit`
 - `run_command`
-- `git_command`
 
-The MCP discovers the active VS Code workspace lazily through MCP Roots when a tool is first used. No `${workspaceFolder}` launch-time variable is required.
+The MCP discovers the active VS Code workspace lazily through MCP Roots,
+requires exactly one local `file:` root, and does not accept a model-supplied
+host workspace path.
 
-## Local development
+## Host prerequisites
+
+- Node.js 20.10 or newer
+- Docker with Linux-container support
+- Exactly one local VS Code workspace root
+
+## Docker behavior and lifecycle
+
+The trusted host facade starts one deterministic Docker Compose project for the
+active workspace. The only runtime service is `agent`; it runs as the unprivileged
+`vscode` user with all Linux capabilities dropped and `no-new-privileges` set.
+The workspace is bind-mounted, while its `.git` directory is over-mounted with
+an inaccessible tmpfs. No Docker socket or credential path is mounted.
+
+MCP stdin EOF/close, SIGINT, SIGTERM, SIGHUP, or a fatal process error starts an
+idempotent shutdown. Shutdown waits for in-flight preparation, runs
+`docker compose down --remove-orphans`, closes the MCP server, and exits. The
+15-minute idle timeout is a secondary cleanup path. New calls fail once shutdown
+begins.
+
+## Local development and validation
+
+From Git Bash:
 
 ```bash
 npm run link
-```
-
-User-level VS Code MCP configuration while linked:
-
-```json
-"agent-env": {
-  "type": "stdio",
-  "command": "agent-env-mcp"
-}
-```
-
-To remove the global development link:
-
-```bash
+npm test
+npm run validate
 npm run unlink
 ```
 
-## Lifecycle
-
-The host-side facade owns one deterministic Docker Compose project for the active
-workspace. An MCP stdin EOF/close, SIGINT, SIGTERM, SIGHUP, or fatal process
-error starts one idempotent shutdown sequence. Shutdown waits for any in-flight
-environment preparation to settle, forces `docker compose down --remove-orphans`
-for the owned project even after a partial startup, closes the MCP server, and
-then exits. VS Code does not need to send a particular signal for containers to
-be released.
-
-The existing 15-minute idle timeout remains a secondary cleanup path. New tool
-calls fail once shutdown begins.
-
-## Testing and validation
-
-Run the policy and lifecycle tests:
-
-```bash
-npm test
-```
-
-Run syntax checks, the test suite, and an npm package dry run together:
-
-```bash
-npm run validate
-```
-
-The tests cover protected workspace paths, child-environment credential
-filtering, blocked executable classes, local-only Git restrictions, hardened Git
-configuration, single-flight shutdown, partial-startup cleanup, and teardown
-failure handling. Docker Compose rendering and image builds remain separate host
+`npm run validate` performs syntax checks, policy and lifecycle tests, and an
+npm package dry run. Docker Compose rendering and image builds are separate host
 integration checks because they require a running Docker daemon.
 
-## 0.3.1 acceptance checks
+## VS Code configuration
 
-Before removing a project's old `.devcontainer`:
+Published-package configuration:
 
-1. `ensure_environment` succeeds and reports `/agent-env/environment/<project>`.
-2. `run_command` can build the project.
-3. `run_command` cannot obtain the real Git branch/history even if it invokes Git indirectly through Python/Node.
-4. `git_command ["status", "--short", "--branch"]` succeeds.
-5. The Git service has no network access.
+```json
+{
+  "servers": {
+    "agent-env": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["--yes", "@brycepelletier/agent-env-mcp@0.4.0"]
+    }
+  }
+}
+```
 
-The current `.git` masking implementation assumes a standard checkout where `.git` is a directory. Git worktrees/submodules that use a `.git` file should be rejected or handled by a future mount strategy before treating this runtime as hardened for those repository forms.
+While locally linked, replace `npx` and its arguments with:
+
+```json
+"command": "agent-env-mcp"
+```
+
+## Acceptance checks
+
+Before relying on the boundary:
+
+1. `ensure_environment` reports the expected project workspace.
+2. `run_command` can build and test the project.
+3. Direct `git` is rejected by policy.
+4. Invoking the real Git binary indirectly through Python or Node reports that
+   the workspace is not a Git repository because `.git` is physically hidden.
+5. `.git`, `.ssh`, and `.gnupg` paths are inaccessible through workspace tools.
+6. No GitHub credential variables, PEM, or Docker socket are visible.
+7. The MCP tool inventory contains no `git_command` or GitHub API tools.
+8. Closing the MCP connection removes its Compose containers.
+
+The `.git` masking assumes a standard checkout where `.git` is a directory.
+Git worktrees and submodules that use a `.git` file must be rejected or handled
+by a future mount strategy before treating those repository forms as hardened.
+
+## License
+
+MIT. See `LICENSE`.

@@ -2,13 +2,11 @@
   "servers": {
     "agent-env": {
       "type": "stdio",
-      "command": "node",
+      "command": "npx",
       "args": [
-        "D:\\mcp\\agent-env-mcp\\index.mjs"
-      ],
-      "env": {
-        "AGENT_HOST_WORKSPACE": "${workspaceFolder}"
-      }
+        "--yes",
+        "@brycepelletier/agent-env-mcp@0.4.0"
+      ]
     }
   }
 }

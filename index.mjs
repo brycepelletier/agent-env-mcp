@@ -21,7 +21,6 @@ const RUNTIME_DIR = path.join(SERVER_ROOT, "runtime");
 const COMPOSE_FILE = path.join(RUNTIME_DIR, "compose.yaml");
 
 const AGENT_SERVICE = "agent";
-const GIT_SERVICE = "git";
 const IDLE_TIMEOUT_MS = 15 * 60 * 1000;
 const MAX_CONTROLLER_OUTPUT_BYTES = 1024 * 1024;
 
@@ -274,7 +273,7 @@ async function helperRaw(
   payload,
   timeoutMs = 60_000
 ) {
-  if (service !== AGENT_SERVICE && service !== GIT_SERVICE) {
+  if (service !== AGENT_SERVICE) {
     throw new Error("Invalid agent-env runtime service.");
   }
 
@@ -327,15 +326,7 @@ async function verifyServices(selectedRuntime) {
     15_000
   );
 
-  const git = await helperRaw(
-    selectedRuntime,
-    GIT_SERVICE,
-    "verify",
-    {},
-    15_000
-  );
-
-  if (engineer.role !== "engineer" || git.role !== "git") {
+  if (engineer.role !== "engineer") {
     throw new Error("Agent runtime service roles were not verified correctly.");
   }
 
@@ -520,12 +511,6 @@ const runCommandArgs = z.object({
   timeout_seconds: z.number().int().min(1).max(900).optional().default(300),
 });
 
-const gitCommandArgs = z.object({
-  args: z.array(z.string().max(16 * 1024)).max(128).optional().default([]),
-  cwd: z.string().max(4096).optional().default("."),
-  timeout_seconds: z.number().int().min(1).max(900).optional().default(300),
-});
-
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
     {
@@ -610,20 +595,6 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         additionalProperties: false,
       },
     },
-    {
-      name: "git_command",
-      description:
-        "Run an allowlisted local Git operation in the isolated Git container. Network Git operations are unavailable.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          args: { type: "array", items: { type: "string" }, maxItems: 128 },
-          cwd: { type: "string" },
-          timeout_seconds: { type: "integer", minimum: 1, maximum: 900 },
-        },
-        additionalProperties: false,
-      },
-    },
   ],
 }));
 
@@ -691,18 +662,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       await invokeHelper(
         AGENT_SERVICE,
         "run_command",
-        args,
-        args.timeout_seconds * 1000 + 5_000
-      )
-    );
-  }
-
-  if (name === "git_command") {
-    const args = gitCommandArgs.parse(rawArgs);
-    return textResult(
-      await invokeHelper(
-        GIT_SERVICE,
-        "git_command",
         args,
         args.timeout_seconds * 1000 + 5_000
       )

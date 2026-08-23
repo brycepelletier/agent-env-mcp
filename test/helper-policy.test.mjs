@@ -1,10 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  hardenedGitArgs,
   normalizedRelative,
   sanitizedChildEnvironment,
-  validateGitArgs,
   validateProgram,
 } from "../runtime/helper.mjs";
 
@@ -36,31 +34,15 @@ test("engineering commands block Git, shells, Docker, and absolute executables",
   for (const program of ["git", "bash", "sh", "docker", "ssh", "/usr/bin/pio"]) {
     assert.throws(() => validateProgram(program));
   }
-  assert.doesNotThrow(() => validateProgram("git", { allowGit: true }));
 });
 
-test("local Git policy permits bounded operations and blocks remote or destructive ones", () => {
-  for (const args of [["status"], ["diff", "--cached"], ["log", "--oneline"], ["commit", "-m", "message"]]) {
-    assert.doesNotThrow(() => validateGitArgs(args));
-  }
-  for (const args of [
-    ["fetch"], ["pull"], ["push"], ["status", "--force"],
-    ["rebase", "--exec=evil"], ["branch", "--delete", "main"],
-    ["commit", "--amend"], ["stash", "clear"],
-  ]) {
-    assert.throws(() => validateGitArgs(args));
-  }
-});
-
-test("hardened Git arguments disable hooks, signing, credentials, and file transport", () => {
-  const args = hardenedGitArgs(["status"]);
-  for (const setting of [
-    "core.hooksPath=/dev/null",
-    "commit.gpgSign=false",
-    "tag.gpgSign=false",
-    "credential.helper=",
-    "protocol.file.allow=never",
-  ]) {
-    assert.ok(args.includes(setting));
-  }
+test("agent-env exposes no Git tool or Git runtime service", async () => {
+  const index = await import("node:fs/promises").then((fs) =>
+    fs.readFile(new URL("../index.mjs", import.meta.url), "utf8")
+  );
+  const compose = await import("node:fs/promises").then((fs) =>
+    fs.readFile(new URL("../runtime/compose.yaml", import.meta.url), "utf8")
+  );
+  assert.equal(index.includes('name: "git_command"'), false);
+  assert.equal(compose.includes("\n  git:"), false);
 });

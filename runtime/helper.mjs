@@ -45,23 +45,6 @@ const BLOCKED_PROGRAMS = new Set([
   "env",
 ]);
 
-const ALLOWED_GIT_SUBCOMMANDS = new Set([
-  "status",
-  "diff",
-  "log",
-  "show",
-  "rev-parse",
-  "branch",
-  "switch",
-  "add",
-  "commit",
-  "merge",
-  "rebase",
-  "cherry-pick",
-  "tag",
-  "stash",
-]);
-
 function fail(message) {
   const error = new Error(message);
   error.isAgentEnvError = true;
@@ -211,87 +194,7 @@ export function sanitizedChildEnvironment(sourceEnvironment = process.env) {
   return result;
 }
 
-export function validateGitArgs(args) {
-  if (!Array.isArray(args) || args.length === 0) {
-    fail("git_command requires a Git subcommand.");
-  }
-
-  const subcommand = args[0];
-  if (!ALLOWED_GIT_SUBCOMMANDS.has(subcommand)) {
-    fail(
-      `Git subcommand '${subcommand}' is not allowed by the local-only Git policy.`
-    );
-  }
-
-  if (args.some((arg) => ["--ext-diff", "--force", "-f"].includes(arg))) {
-    fail("Force/external-execution Git options are blocked.");
-  }
-
-  if (
-    args.some(
-      (arg) => arg === "--exec" || arg === "-x" || arg.startsWith("--exec=")
-    )
-  ) {
-    fail("Git options that execute arbitrary commands are blocked.");
-  }
-
-  if (
-    subcommand === "branch" &&
-    args.some((arg) => arg === "-D" || arg === "-d" || arg === "--delete")
-  ) {
-    fail("Branch deletion is blocked by the hardened Git policy.");
-  }
-
-  if (
-    subcommand === "switch" &&
-    args.some(
-      (arg) =>
-        arg === "-C" ||
-        arg === "--force-create" ||
-        arg === "--discard-changes"
-    )
-  ) {
-    fail("Destructive branch switching is blocked.");
-  }
-
-  if (subcommand === "commit" && args.includes("--amend")) {
-    fail("Commit amendment is blocked by the hardened Git policy.");
-  }
-
-  if (
-    subcommand === "tag" &&
-    args.some((arg) => arg === "-d" || arg === "--delete")
-  ) {
-    fail("Tag deletion is blocked by the hardened Git policy.");
-  }
-
-  if (
-    subcommand === "stash" &&
-    args.some((arg) => arg === "drop" || arg === "clear")
-  ) {
-    fail("Destructive stash operations are blocked.");
-  }
-}
-
-export function hardenedGitArgs(args) {
-  validateGitArgs(args);
-
-  return [
-    "-c",
-    "core.hooksPath=/dev/null",
-    "-c",
-    "commit.gpgSign=false",
-    "-c",
-    "tag.gpgSign=false",
-    "-c",
-    "credential.helper=",
-    "-c",
-    "protocol.file.allow=never",
-    ...args,
-  ];
-}
-
-export function validateProgram(program, { allowGit = false } = {}) {
+export function validateProgram(program) {
   if (typeof program !== "string" || !program) fail("Program is required.");
   if (program.includes("\0")) fail("Program contains a NUL byte.");
   if (path.isAbsolute(program)) fail("Absolute executable paths are not allowed.");
@@ -302,12 +205,8 @@ export function validateProgram(program, { allowGit = false } = {}) {
     fail(`Program '${base}' is blocked by the agent runtime policy.`);
   }
 
-  if (!allowGit && base === "git") {
-    fail("Direct Git use is reserved for the git_command tool.");
-  }
-
-  if (allowGit && base !== "git") {
-    fail("git_command can execute only Git.");
+  if (base === "git") {
+    fail("Git operations belong to the GitHub Operator capability domain.");
   }
 }
 
@@ -316,9 +215,8 @@ async function runProgram({
   args = [],
   cwd = ".",
   timeout_seconds = 300,
-  allowGit = false,
 }) {
-  validateProgram(program, { allowGit });
+  validateProgram(program);
 
   const cwdResolved = await resolveExisting(cwd);
   const cwdStat = await fsp.stat(cwdResolved.path);
@@ -406,7 +304,7 @@ async function verify() {
     fail("Agent runtime marker is invalid.");
   }
 
-  if (RUNTIME_ROLE !== "engineer" && RUNTIME_ROLE !== "git") {
+  if (RUNTIME_ROLE !== "engineer") {
     fail("Agent runtime role is invalid.");
   }
 
@@ -723,15 +621,7 @@ async function main() {
     result = await workspaceEdit(payload);
   } else if (operation === "run_command") {
     requireRole("engineer");
-    result = await runProgram({ ...payload, allowGit: false });
-  } else if (operation === "git_command") {
-    requireRole("git");
-    result = await runProgram({
-      ...payload,
-      program: "git",
-      args: hardenedGitArgs(payload.args ?? []),
-      allowGit: true,
-    });
+    result = await runProgram(payload);
   } else {
     fail(`Unknown helper operation '${operation}'.`);
   }
