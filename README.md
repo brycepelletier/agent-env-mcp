@@ -40,6 +40,13 @@ an intentional breaking change: all local and remote Git operations belong to
 - `workspace_edit`
 - `run_command`
 
+Recursive workspace listing and search omit `.git`, `.ssh`, and `.gnupg`
+directory nodes and their descendants at every depth. Direct read or edit
+requests containing those path segments are rejected before filesystem access.
+The `.git` mount remains physically masked from programs launched through
+`run_command`; programs that deliberately access it may receive a permission
+error without gaining repository metadata.
+
 The MCP discovers the active VS Code workspace lazily through MCP Roots,
 requires exactly one local `file:` root, and does not accept a model-supplied
 host workspace path.
@@ -89,7 +96,7 @@ Published-package configuration:
     "agent-env": {
       "type": "stdio",
       "command": "npx",
-      "args": ["--yes", "@brycepelletier/agent-env-mcp@0.4.0"]
+      "args": ["--yes", "@brycepelletier/agent-env-mcp@0.4.1"]
     }
   }
 }

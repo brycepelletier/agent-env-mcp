@@ -1,6 +1,6 @@
 {
   "name": "@brycepelletier/agent-env-mcp",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Hardened MCP gateway for reusable containerized software-engineering environments.",
   "license": "MIT",
   "repository": {
@@ -16,7 +16,7 @@
   },
   "type": "module",
   "bin": {
-    "agent-env-mcp": "./index.mjs"
+    "agent-env-mcp": "index.mjs"
   },
   "files": [
     "LICENSE",

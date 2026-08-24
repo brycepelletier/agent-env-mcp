@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   normalizedRelative,
   sanitizedChildEnvironment,
+  searchArguments,
   validateProgram,
 } from "../runtime/helper.mjs";
 
@@ -11,6 +12,28 @@ test("workspace paths reject traversal and protected metadata", () => {
   for (const value of ["../outside", "/etc/passwd", "C:\\secret", ".git/config", ".ssh/id_rsa", ".gnupg/key"]) {
     assert.throws(() => normalizedRelative(value));
   }
+});
+
+test("workspace search excludes protected directory nodes and descendants", () => {
+  const args = searchArguments(
+    { query: "needle", glob: "**", regex: false },
+    "/workspace"
+  );
+  const expected = [
+    "!**/.git",
+    "!**/.git/**",
+    "!**/.ssh",
+    "!**/.ssh/**",
+    "!**/.gnupg",
+    "!**/.gnupg/**",
+  ];
+
+  for (const glob of expected) {
+    const index = args.indexOf(glob);
+    assert.notEqual(index, -1, glob);
+    assert.ok(index > args.indexOf("**"), `${glob} must follow the caller glob`);
+  }
+  assert.deepEqual(args.slice(-3), ["--", "needle", "/workspace"]);
 });
 
 test("child environment strips credentials and hardens Git", () => {

@@ -16,6 +16,10 @@ const MAX_LIST_ENTRIES = 500;
 const MAX_COMMAND_STREAM_BYTES = 64 * 1024;
 
 const PROTECTED_SEGMENTS = new Set([".git", ".ssh", ".gnupg"]);
+const PROTECTED_SEARCH_GLOBS = [...PROTECTED_SEGMENTS].flatMap((segment) => [
+  `!**/${segment}`,
+  `!**/${segment}/**`,
+]);
 
 const BLOCKED_PROGRAMS = new Set([
   "bash",
@@ -470,6 +474,31 @@ async function runRawProgram(program, args, cwd, timeoutMs) {
   });
 }
 
+export function searchArguments({ query, glob, regex = false }, searchRoot) {
+  const args = [
+    "--line-number",
+    "--column",
+    "--no-heading",
+    "--color",
+    "never",
+    "--hidden",
+    "--max-filesize",
+    "2M",
+  ];
+
+  if (!regex) args.push("--fixed-strings");
+  if (glob) args.push("--glob", glob);
+
+  // Keep protected exclusions last so a caller-supplied glob cannot re-include
+  // masked repository metadata or credential directories.
+  for (const protectedGlob of PROTECTED_SEARCH_GLOBS) {
+    args.push("--glob", protectedGlob);
+  }
+
+  args.push("--", query, searchRoot);
+  return args;
+}
+
 async function searchWorkspace({
   query,
   path: requested = ".",
@@ -479,22 +508,7 @@ async function searchWorkspace({
 }) {
   const resolved = await resolveExisting(requested);
 
-  const args = [
-    "--line-number",
-    "--column",
-    "--no-heading",
-    "--color",
-    "never",
-    "--hidden",
-    "--glob",
-    "!.git/**",
-    "--max-filesize",
-    "2M",
-  ];
-
-  if (!regex) args.push("--fixed-strings");
-  if (glob) args.push("--glob", glob);
-  args.push("--", query, resolved.path);
+  const args = searchArguments({ query, glob, regex }, resolved.path);
 
   const result = await runRawProgram(
     "rg",
