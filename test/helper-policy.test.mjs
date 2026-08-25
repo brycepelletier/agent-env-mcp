@@ -2,12 +2,30 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   commandStartError,
+  createReadResult,
   normalizedRelative,
+  readContentSlice,
   runtimeErrorMessage,
   sanitizedChildEnvironment,
   searchArguments,
   validateProgram,
 } from "../runtime/helper.mjs";
+
+test("file reads return verbatim content without synthetic line numbers", () => {
+  const text = "alpha\r\nbeta\r\n3: source text that already has a prefix\r\n";
+  assert.equal(
+    readContentSlice(text, 1, 3),
+    text
+  );
+  assert.equal(readContentSlice(text, 2, 2), "beta\r\n");
+  assert.equal(text.replace(readContentSlice(text, 2, 2), "updated\r\n"),
+    "alpha\r\nupdated\r\n3: source text that already has a prefix\r\n");
+  assert.deepEqual(createReadResult("example.txt", false, text), {
+    path: "example.txt",
+    truncated: false,
+    content: text,
+  });
+});
 
 test("runtime failures retain actionable sanitized details", () => {
   assert.equal(
@@ -50,6 +68,8 @@ test("workspace search excludes protected directory nodes and descendants", () =
     assert.notEqual(index, -1, glob);
     assert.ok(index > args.indexOf("**"), `${glob} must follow the caller glob`);
   }
+  assert.equal(args.includes("--line-number"), false);
+  assert.equal(args.includes("--column"), false);
   assert.deepEqual(args.slice(-3), ["--", "needle", "/workspace"]);
 });
 

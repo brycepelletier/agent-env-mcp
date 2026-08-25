@@ -135,6 +135,25 @@ export function normalizedRelative(input = ".") {
   return normalized;
 }
 
+export function lineStartOffsets(text) {
+  const offsets = [0];
+  for (let index = 0; index < text.length; index++) {
+    if (text[index] === "\n" && index + 1 < text.length) offsets.push(index + 1);
+  }
+  return offsets;
+}
+
+export function readContentSlice(text, startLine, endLine) {
+  const offsets = lineStartOffsets(text);
+  const startOffset = offsets[startLine - 1];
+  const endOffset = endLine < offsets.length ? offsets[endLine] : text.length;
+  return text.slice(startOffset, endOffset);
+}
+
+export function createReadResult(pathValue, truncated, content) {
+  return { path: pathValue, truncated, content };
+}
+
 function isWithin(root, target) {
   const relative = path.relative(root, target);
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
@@ -451,31 +470,26 @@ async function readFile({ path: requested, start_line = 1, end_line }) {
     fail("Binary files are not readable through read_file.");
   }
 
-  const lines = buffer.toString("utf8").split(/\r?\n/);
-  if (start_line > lines.length) {
-    fail(`start_line exceeds file length (${lines.length} lines).`);
+  const text = buffer.toString("utf8");
+  const lineCount = lineStartOffsets(text).length;
+  if (start_line > lineCount) {
+    fail(`start_line exceeds file length (${lineCount} lines).`);
   }
 
   const requestedEnd = end_line ?? start_line + MAX_READ_LINES - 1;
   const actualEnd = Math.min(
-    lines.length,
+    lineCount,
     requestedEnd,
     start_line + MAX_READ_LINES - 1
   );
 
-  const content = lines
-    .slice(start_line - 1, actualEnd)
-    .map((line, index) => `${start_line + index}: ${line}`)
-    .join("\n");
+  const content = readContentSlice(text, start_line, actualEnd);
 
-  return {
-    path: resolved.relative,
-    start_line,
-    end_line: actualEnd,
-    total_lines: lines.length,
-    truncated: actualEnd < requestedEnd || actualEnd < lines.length,
-    content,
-  };
+  return createReadResult(
+    resolved.relative,
+    actualEnd < requestedEnd || actualEnd < lineCount,
+    content
+  );
 }
 
 async function runRawProgram(program, args, cwd, timeoutMs) {
@@ -528,8 +542,6 @@ async function runRawProgram(program, args, cwd, timeoutMs) {
 
 export function searchArguments({ query, glob, regex = false }, searchRoot) {
   const args = [
-    "--line-number",
-    "--column",
     "--no-heading",
     "--color",
     "never",

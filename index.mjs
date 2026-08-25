@@ -536,7 +536,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: "read_file",
-      description: "Read a bounded line range from a workspace text file.",
+      description:
+        "Read verbatim content from a bounded range of a workspace text file. Returned content never contains synthetic line-number prefixes.",
       inputSchema: {
         type: "object",
         properties: {
@@ -550,7 +551,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: "search_workspace",
-      description: "Search text within the authorized project workspace.",
+      description:
+        "Search text within the authorized project workspace. Matches include paths and verbatim matching text without synthetic line or column numbers.",
       inputSchema: {
         type: "object",
         properties: {

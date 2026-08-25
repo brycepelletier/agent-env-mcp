@@ -1,6 +1,6 @@
 {
   "name": "@brycepelletier/agent-env-mcp",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "description": "Hardened MCP gateway for reusable containerized software-engineering environments.",
   "license": "MIT",
   "repository": {

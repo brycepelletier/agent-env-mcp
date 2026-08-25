@@ -51,6 +51,14 @@ The MCP discovers the active VS Code workspace lazily through MCP Roots,
 requires exactly one local `file:` root, and does not accept a model-supplied
 host workspace path.
 
+`read_file` returns only the path, truncation state, and verbatim source text.
+Source lines and response fields are never decorated with generated line
+numbers. This makes returned content safe to reuse as `workspace_edit.old_text`
+without accidentally searching for presentation-only prefixes or normalized
+line endings. `search_workspace` likewise returns file paths and matching text
+without generated line or column numbers. Other MCP modules must not decorate
+editable source content with synthetic numbering.
+
 ### Command path semantics
 
 The `workspace` reported by `ensure_environment` is already the authorized
