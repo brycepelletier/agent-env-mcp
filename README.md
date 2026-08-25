@@ -51,6 +51,29 @@ The MCP discovers the active VS Code workspace lazily through MCP Roots,
 requires exactly one local `file:` root, and does not accept a model-supplied
 host workspace path.
 
+### Command path semantics
+
+The `workspace` reported by `ensure_environment` is already the authorized
+project root. `run_command` resolves `cwd` and any executable path containing a
+slash relative to that root. Use `cwd: "."` for repository-root commands or a
+relative subdirectory such as `scripts`; do not pass an absolute path or repeat
+the project directory name. In the Linux runtime, prefer `python3` unless the
+repository defines another interpreter.
+
+Examples:
+
+```json
+{"program":"python3","args":["verify_pr_validation.py"],"cwd":"."}
+{"program":"python3","args":["scripts/verify_pr_validation.py"],"cwd":"."}
+{"program":"python3","args":["verify_pr_validation.py"],"cwd":"scripts"}
+```
+
+Invalid paths, missing executables, and permission failures return concrete
+sanitized errors. A program that starts and exits unsuccessfully returns its
+`exit_code`, `signal`, bounded `stdout`, and bounded `stderr`, including script,
+dependency/import, and network diagnostics emitted by that program. These
+details improve recovery without expanding the authorized filesystem boundary.
+
 ## Host prerequisites
 
 - Node.js 20.10 or newer

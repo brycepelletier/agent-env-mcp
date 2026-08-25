@@ -1,11 +1,28 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  commandStartError,
   normalizedRelative,
+  runtimeErrorMessage,
   sanitizedChildEnvironment,
   searchArguments,
   validateProgram,
 } from "../runtime/helper.mjs";
+
+test("runtime failures retain actionable sanitized details", () => {
+  assert.equal(
+    commandStartError({ code: "ENOENT" }, "python3").message,
+    "Executable 'python3' was not found in the runtime PATH."
+  );
+  assert.equal(
+    commandStartError({ code: "EACCES" }, "scripts/check").message,
+    "Permission denied while starting executable 'scripts/check'."
+  );
+  assert.match(
+    runtimeErrorMessage(new Error("dependency loader failed")),
+    /Agent runtime operation failed \(Error\): dependency loader failed/
+  );
+});
 
 test("workspace paths reject traversal and protected metadata", () => {
   assert.equal(normalizedRelative("src/main.cpp"), "src/main.cpp");

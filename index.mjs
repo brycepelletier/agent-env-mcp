@@ -582,13 +582,17 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: "run_command",
       description:
-        "Run one non-shell program in the engineering container, where the real .git metadata is masked.",
+        "Run one non-shell program in the engineering container. cwd and executable paths must be relative to the authorized workspace root returned by ensure_environment; use cwd '.' for the project root. The real .git metadata is masked.",
       inputSchema: {
         type: "object",
         properties: {
           program: { type: "string" },
           args: { type: "array", items: { type: "string" }, maxItems: 128 },
-          cwd: { type: "string" },
+          cwd: {
+            type: "string",
+            description:
+              "Workspace-root-relative directory. Use '.' for the project root or a relative subdirectory such as 'scripts'; absolute paths are rejected.",
+          },
           timeout_seconds: { type: "integer", minimum: 1, maximum: 900 },
         },
         required: ["program"],

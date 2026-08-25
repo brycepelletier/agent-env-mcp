@@ -55,6 +55,42 @@ function fail(message) {
   throw error;
 }
 
+function agentEnvError(message) {
+  const error = new Error(message);
+  error.isAgentEnvError = true;
+  return error;
+}
+
+export function commandStartError(error, program) {
+  switch (error?.code) {
+    case "ENOENT":
+      return agentEnvError(`Executable '${program}' was not found in the runtime PATH.`);
+    case "EACCES":
+    case "EPERM":
+      return agentEnvError(`Permission denied while starting executable '${program}'.`);
+    default: {
+      const code = error?.code ? ` (${error.code})` : "";
+      return agentEnvError(`Could not start executable '${program}'${code}.`);
+    }
+  }
+}
+
+export function runtimeErrorMessage(error) {
+  if (error?.isAgentEnvError) return error.message;
+
+  const name = error?.name || "Error";
+  const code = error?.code ? ` ${error.code}` : "";
+  const rawMessage = String(error?.message || "Unknown runtime error.");
+  const message = rawMessage
+    .split(WORKSPACE_ROOT || "\0")
+    .join("[workspace]")
+    .split("/opt/agent-env")
+    .join("[agent-env]")
+    .slice(0, 2000);
+
+  return `Agent runtime operation failed (${name}${code}): ${message}`;
+}
+
 function requireRole(expected) {
   if (RUNTIME_ROLE !== expected) {
     fail(`Operation requires the '${expected}' runtime role.`);
@@ -116,7 +152,23 @@ async function resolveExisting(relativeInput = ".") {
 
   if (!isWithin(root, lexical)) fail("Path escapes the authorized workspace.");
 
-  const real = await fsp.realpath(lexical);
+  let real;
+  try {
+    real = await fsp.realpath(lexical);
+  } catch (error) {
+    switch (error?.code) {
+      case "ENOENT":
+      case "ENOTDIR":
+        fail(`Workspace path '${relative}' does not exist.`);
+        break;
+      case "EACCES":
+      case "EPERM":
+        fail(`Permission denied while resolving workspace path '${relative}'.`);
+        break;
+      default:
+        throw error;
+    }
+  }
   if (!isWithin(root, real)) {
     fail("Resolved path escapes the authorized workspace through a symlink.");
   }
@@ -267,7 +319,7 @@ async function runProgram({
 
     child.stdout.on("data", (chunk) => capture(stdoutChunks, chunk, true));
     child.stderr.on("data", (chunk) => capture(stderrChunks, chunk, false));
-    child.on("error", reject);
+    child.on("error", (error) => reject(commandStartError(error, program)));
 
     const hardKill = () => {
       if (!finished) child.kill("SIGKILL");
@@ -648,9 +700,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     process.stdout.write(
       JSON.stringify({
         ok: false,
-        error: error?.isAgentEnvError
-          ? error.message
-          : "Agent runtime operation failed.",
+        error: runtimeErrorMessage(error),
       })
     );
 
