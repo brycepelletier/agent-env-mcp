@@ -498,10 +498,11 @@ const searchWorkspaceArgs = z.object({
 });
 
 const workspaceEditArgs = z.object({
-  operation: z.enum(["create", "replace", "delete"]),
+  operation: z.enum(["create", "replace", "overwrite", "delete"]),
   path: z.string().min(1).max(4096),
   old_text: z.string().max(1024 * 1024).optional(),
   new_text: z.string().max(1024 * 1024).optional(),
+  expected_sha256: z.string().regex(/^[a-f0-9]{64}$/i).optional(),
 });
 
 const runCommandArgs = z.object({
@@ -537,7 +538,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: "read_file",
       description:
-        "Read verbatim content from a bounded range of a workspace text file. Returned content never contains synthetic line-number prefixes.",
+        "Read verbatim content from a bounded range of a workspace text file. Returned content never contains synthetic line-number prefixes. The response sha256 identifies the complete file and must be passed as expected_sha256 for a guarded whole-file overwrite.",
       inputSchema: {
         type: "object",
         properties: {
@@ -568,14 +569,24 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: "workspace_edit",
-      description: "Create, exact-replace, or delete one workspace file.",
+      description:
+        "Create, edit, or delete one workspace file. Use replace only for a small exact old_text snippet. For a complete-file rewrite, use overwrite with new_text and the expected_sha256 returned by read_file; do not echo the old file as old_text.",
       inputSchema: {
         type: "object",
         properties: {
-          operation: { type: "string", enum: ["create", "replace", "delete"] },
+          operation: {
+            type: "string",
+            enum: ["create", "replace", "overwrite", "delete"],
+          },
           path: { type: "string" },
           old_text: { type: "string" },
           new_text: { type: "string" },
+          expected_sha256: {
+            type: "string",
+            pattern: "^[a-fA-F0-9]{64}$",
+            description:
+              "Required for overwrite. Copy the sha256 returned by read_file so stale writes are rejected.",
+          },
         },
         required: ["operation", "path"],
         additionalProperties: false,
@@ -655,6 +666,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       (args.old_text === undefined || args.new_text === undefined)
     ) {
       throw new Error("replace requires old_text and new_text.");
+    }
+    if (
+      args.operation === "overwrite" &&
+      (args.new_text === undefined || args.expected_sha256 === undefined)
+    ) {
+      throw new Error("overwrite requires new_text and expected_sha256.");
     }
 
     return textResult(

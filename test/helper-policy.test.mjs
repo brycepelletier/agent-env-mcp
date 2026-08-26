@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
 import {
   commandStartError,
   createReadResult,
+  guardedOverwrite,
   normalizedRelative,
   readContentSlice,
   runtimeErrorMessage,
@@ -23,8 +25,30 @@ test("file reads return verbatim content without synthetic line numbers", () => 
   assert.deepEqual(createReadResult("example.txt", false, text), {
     path: "example.txt",
     truncated: false,
+    sha256: createHash("sha256").update(text, "utf8").digest("hex"),
     content: text,
   });
+});
+
+test("whole-file overwrite uses the read hash instead of echoed old_text", () => {
+  const current = "quoted = \\\"value\\\";\r\n";
+  const read = createReadResult("quoted.cpp", false, current);
+  const result = guardedOverwrite(current, "quoted = \\\"updated\\\";\r\n", read.sha256);
+  assert.equal(result.changed, true);
+  assert.equal(result.content, "quoted = \\\"updated\\\";\r\n");
+  assert.throws(
+    () => guardedOverwrite("concurrent change", "replacement", read.sha256),
+    /file changed after read_file/
+  );
+});
+
+test("partial reads expose the complete file hash for guarded overwrite", () => {
+  const complete = "first\nsecond\nthird\n";
+  const partial = readContentSlice(complete, 1, 1);
+  const completeHash = createHash("sha256").update(complete, "utf8").digest("hex");
+  const read = createReadResult("example.txt", true, partial, completeHash);
+  assert.equal(read.content, "first\n");
+  assert.equal(read.sha256, completeHash);
 });
 
 test("runtime failures retain actionable sanitized details", () => {

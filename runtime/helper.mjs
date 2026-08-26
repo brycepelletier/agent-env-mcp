@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -150,8 +151,36 @@ export function readContentSlice(text, startLine, endLine) {
   return text.slice(startOffset, endOffset);
 }
 
-export function createReadResult(pathValue, truncated, content) {
-  return { path: pathValue, truncated, content };
+export function contentSha256(content) {
+  return createHash("sha256").update(content, "utf8").digest("hex");
+}
+
+export function createReadResult(
+  pathValue,
+  truncated,
+  content,
+  sha256 = contentSha256(content)
+) {
+  return {
+    path: pathValue,
+    truncated,
+    sha256,
+    content,
+  };
+}
+
+export function guardedOverwrite(current, replacement, expectedSha256) {
+  if (!/^[a-f0-9]{64}$/i.test(expectedSha256 || "")) {
+    fail("overwrite requires a valid expected_sha256 from read_file.");
+  }
+  if (contentSha256(current) !== expectedSha256.toLowerCase()) {
+    fail("overwrite refused because the file changed after read_file.");
+  }
+  return {
+    content: replacement,
+    changed: current !== replacement,
+    sha256: contentSha256(replacement),
+  };
 }
 
 function isWithin(root, target) {
@@ -488,7 +517,8 @@ async function readFile({ path: requested, start_line = 1, end_line }) {
   return createReadResult(
     resolved.relative,
     actualEnd < requestedEnd || actualEnd < lineCount,
-    content
+    content,
+    contentSha256(text)
   );
 }
 
@@ -600,7 +630,33 @@ async function searchWorkspace({
   };
 }
 
-async function workspaceEdit({ operation, path: requested, old_text, new_text }) {
+async function writeReplacement(target, stat, updated) {
+  const temp = path.join(
+    path.dirname(target.path),
+    `.${path.basename(target.path)}.agent-env-${process.pid}-${Date.now()}`
+  );
+
+  try {
+    await fsp.writeFile(temp, updated, {
+      encoding: "utf8",
+      mode: stat.mode,
+      flag: "wx",
+    });
+    await fsp.rename(temp, target.path);
+  } finally {
+    try {
+      await fsp.unlink(temp);
+    } catch {}
+  }
+}
+
+async function workspaceEdit({
+  operation,
+  path: requested,
+  old_text,
+  new_text,
+  expected_sha256,
+}) {
   if (operation === "create") {
     if (new_text === undefined) fail("create requires new_text.");
     const target = await resolveCreateTarget(requested);
@@ -639,25 +695,28 @@ async function workspaceEdit({ operation, path: requested, old_text, new_text })
     }
 
     const updated = current.replace(old_text, new_text);
-    const temp = path.join(
-      path.dirname(target.path),
-      `.${path.basename(target.path)}.agent-env-${process.pid}-${Date.now()}`
-    );
-
-    try {
-      await fsp.writeFile(temp, updated, {
-        encoding: "utf8",
-        mode: stat.mode,
-        flag: "wx",
-      });
-      await fsp.rename(temp, target.path);
-    } finally {
-      try {
-        await fsp.unlink(temp);
-      } catch {}
-    }
+    await writeReplacement(target, stat, updated);
 
     return { operation, path: target.relative, changed: true };
+  }
+
+  if (operation === "overwrite") {
+    if (new_text === undefined) fail("overwrite requires new_text.");
+    const target = await resolveExisting(requested);
+    const stat = await fsp.stat(target.path);
+    if (!stat.isFile()) fail("overwrite target must be a regular file.");
+    if (stat.size > MAX_FILE_BYTES) fail("overwrite target exceeds 2 MiB.");
+
+    const current = await fsp.readFile(target.path, "utf8");
+    const result = guardedOverwrite(current, new_text, expected_sha256);
+    if (result.changed) await writeReplacement(target, stat, result.content);
+
+    return {
+      operation,
+      path: target.relative,
+      changed: result.changed,
+      sha256: result.sha256,
+    };
   }
 
   if (operation === "delete") {

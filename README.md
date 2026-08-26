@@ -59,6 +59,21 @@ line endings. `search_workspace` likewise returns file paths and matching text
 without generated line or column numbers. Other MCP modules must not decorate
 editable source content with synthetic numbering.
 
+For full-file changes, use `workspace_edit` with `operation: "overwrite"`, the
+complete `new_text`, and the `expected_sha256` returned by `read_file`. This
+avoids sending a second escaped copy of the old file while still preventing a
+stale agent from overwriting concurrent work. Use `operation: "replace"` only
+for small, unique, exact snippets.
+
+```json
+{
+  "operation": "overwrite",
+  "path": "src/example.cpp",
+  "expected_sha256": "<sha256 returned by read_file>",
+  "new_text": "<complete desired file>"
+}
+```
+
 ### Command path semantics
 
 The `workspace` reported by `ensure_environment` is already the authorized
