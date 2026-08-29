@@ -33,6 +33,10 @@ an intentional breaking change: all local and remote Git operations belong to
 
 ## Tools
 
+### `describe_agent_system`
+
+Reads the installed `~/.agents/*.agent.md` frontmatter and returns the current orchestrator identity, direct capability categories, permitted specialists, their ownership categories, exact `runSubagent` calls, and source filename/hash. It accepts no path or other arguments, does not start the container environment, and never returns specialist tool inventories or schemas. Invalid, duplicate, or missing definitions fail closed.
+
 - `ensure_environment`
 - `list_directory`
 - `read_file`

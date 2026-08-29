@@ -14,6 +14,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { createShutdownCoordinator } from "./runtime/lifecycle.mjs";
+import { describeAgentSystem } from "./runtime/agent-system.mjs";
 
 const VERSION = packageJson.version;
 const SERVER_ROOT = path.dirname(fileURLToPath(import.meta.url));
@@ -515,6 +516,16 @@ const runCommandArgs = z.object({
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
     {
+      name: "describe_agent_system",
+      description:
+        "Describe this agent's direct capability categories, permitted specialist agents, ownership boundaries, and exact runSubagent invocation contract from the installed agent definitions. Returns no child tool schemas.",
+      inputSchema: {
+        type: "object",
+        properties: {},
+        additionalProperties: false,
+      },
+    },
+    {
       name: "ensure_environment",
       description: "Start and verify the authorized Linux agent environment.",
       inputSchema: {
@@ -629,6 +640,13 @@ function textResult(value) {
 
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: rawArgs = {} } = request.params;
+
+  if (name === "describe_agent_system") {
+    if (Object.keys(rawArgs).length !== 0) {
+      throw new Error("describe_agent_system accepts no arguments.");
+    }
+    return textResult(describeAgentSystem());
+  }
 
   if (name === "ensure_environment") {
     return textResult(await ensureEnvironment());
